@@ -1,0 +1,416 @@
+<html>
+<head>
+<!-- Include JQuery to display output in HTML easily. 
+	JQuery is not required for websocket communication itself. -->
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+</head>
+<body>
+
+	<h1>Collaborative Editing Basic Tutorial</h1>
+
+	<script>
+	
+		
+		var documentVersion;
+		const operationsQueue = [];
+
+		/* 
+		 * Create a javascript websocket object using the URL from Java server endpoint 	
+		 * and connect to websocket endpoint.		
+		 */
+		var ws = new WebSocket("ws://" + window.location.host
+				+ "/operational-tranform-tutorial/server-endpoint");
+
+		// Javascript callback function when connection is established. 
+		ws.onopen = function() {
+			console.log("On Open");
+			$("#output").append("Openened connection to websocket<br/>");
+		}
+
+		// Javascript callback function when messages is received from server.
+		ws.onmessage = function(msg) {
+
+			var msgData = msg.data;
+			console.log("On Message = " + msg + " msgData: " + msgData);
+
+			var data = JSON.parse(msgData);
+			console.log("data = " + data.version);
+
+	
+
+			if(data["content"] !== undefined){
+				// First time get content from server
+				$('#editor').val(data["content"]);
+				updateVersion(data.version);
+				$("#sessionSpan").html(data.sessionId);
+			} else if(data["isAck"]){
+				// If its just ack, then update version.
+				updateVersion(data["versionAfterThisOp"]);				
+
+				for(var i = operationsQueue.length -1; i >= 0 ; i--){
+				    if(operationsQueue[i].timestamp === data.timestamp){
+				    	console.log("Ack received so removing = " + operationsQueue[i].timestamp + " data.timestamp: " + data.timestamp);
+				    	operationsQueue.splice(i, 1);
+				    }
+				}
+				
+				var nextOpToSend = operationsQueue.shift();
+				
+				if(nextOpToSend){
+					send(nextOpToSend);
+				}
+				
+				report("ACK received for timestamp = " + data.timestamp, "Received");
+				
+			} else {
+				report( JSON.stringify(data), "Received");
+				data = transform(data);
+				
+				setTextAreaValue(data);
+				
+				
+				
+				updateVersion(data["versionAfterThisOp"]);
+			}
+
+		}
+
+		// Javascript callback function when connection is closed.
+		ws.onclose = function(msg) {
+			console.log("On Close = " + msg);
+			$("#output").append("Closed connection to websocket<br/>");
+		}
+		
+		function transform(currentOp){
+			console.log("transform before = " + JSON.stringify(currentOp));
+			for(var i = 0; i < operationsQueue.length ; i++){
+				
+				var pastOp = operationsQueue[i];
+				
+				console.log("transform check past op - " + pastOp);
+
+						if (pastOp != null && pastOp.position <= currentOp.position) {
+							console.log("Position is before so change" );
+							// Operation currentOpClone = currentOp.clone();
+							var position = currentOp.position;
+							if ("INSERT" === pastOp.action) {
+								position = position + 1;
+							} else if ("DELETE" === pastOp.action) {
+								position = position - 1;
+							}
+							console.log("New position - " + position);
+							currentOp.position = position;
+							report(JSON.stringify(currentOp), "Transformed");
+							// return currentOpClone;
+						} else {
+							console.log("Position not before so no change - " );
+							//return currentOp;
+						}				
+			}
+			console.log("transform after = " + JSON.stringify(currentOp));
+			return currentOp;
+		}
+
+
+	</script>
+
+	<textarea id="editor" name="editor" rows="20" cols="50"></textarea>
+
+	<div id="versionDiv" >Session Id: <span id="sessionSpan"></span> | Version: <span id="versionSpan"></span></div>
+
+	<!-- Display exchange of messages in this div -->
+	<div id="output" style="width: 450px;word-break: break-all; overflow-y: auto;height: 350px;"></div>
+
+
+	<script>
+		/* 	$( "#editor" ).keyup(function(event) {
+		 var c = String.fromCharCode(event.which);
+		
+		 var key = event.keyCode || event.charCode;
+
+		 //if( key == 8 || key == 46 )
+		
+		 console.log( "Handler for .keyup() called. = " + c + "  " + key);
+		 }); */
+
+		$.fn.getCursorPosition = function() {
+			var el = $(this).get(0);
+			var pos = 0;
+			var posEnd = 0;
+			if ('selectionStart' in el) {
+				pos = el.selectionStart;
+				posEnd = el.selectionEnd;
+			} else if ('selection' in document) {
+				el.focus();
+				var Sel = document.selection.createRange();
+				var SelLength = document.selection.createRange().text.length;
+				Sel.moveStart('character', -el.value.length);
+				pos = Sel.text.length - SelLength;
+				posEnd = Sel.text.length;
+			}
+			// return both selection start and end;
+			return [ pos, posEnd ];
+		};
+
+		var getKeyCode = function(str) {
+			return str.charCodeAt(str.length - 1);
+		}
+
+		$('#editor').keydown(function(e) {
+			var kCd = e.keyCode || e.which;
+			// https://stackoverflow.com/questions/17139039/keycode-is-always-zero-in-chrome-for-android
+			/* if (kCd == 0 || kCd == 229) { //for android chrome keycode fix
+			    kCd = getKeyCode(this.value);
+			} */
+			var position = $(this).getCursorPosition();
+			var deleted = '';
+			var val = $(this).val();
+			var action;
+			var chr = '';
+			var pos = position[0];
+			/*Enter: 13,Up: 38,Down: 40,Right: 39,Left: 37,Esc: 27,SpaceBar: 32
+			Ctrl: 17,Alt: 18, Shift: 16*/
+			var ignoreKeys = [ 38, 40, 39, 37, 27, 17, 18, 16 ];
+			if (kCd == 8) { // Backspace
+				if (position[0] == position[1]) {
+					if (position[0] == 0)
+						deleted = '';
+					else
+						deleted = val.substr(position[0] - 1, 1);
+				} else {
+					deleted = val.substring(position[0], position[1]);
+				}
+				action = 'DELETE';
+				chr = deleted;
+				pos = position[0] - 1;
+			} else if (kCd == 46) { // Delete
+				var val = $(this).val();
+				if (position[0] == position[1]) {
+
+					if (position[0] === val.length)
+						deleted = '';
+					else
+						deleted = val.substr(position[0], 1);
+				} else {
+					deleted = val.substring(position[0], position[1]);
+				}
+				action = 'DELETE';
+				chr = deleted;
+			} else if (kCd == 13) {
+				action = 'INSERT';
+				chr = '\n';
+			} else if (ignoreKeys.includes(kCd)) {
+				console.log("Ignored - " + chr);
+				action = 'ignore';
+			} else {
+				action = 'INSERT';
+				chr = String.fromCharCode(kCd);
+				if (!e.shiftKey) {
+					chr = chr.toLowerCase();
+				}
+				//chr = val.substring(position[0]-1, position[1]-1);
+			}
+
+			queueOrSend(action, chr, pos, documentVersion)
+
+		});
+
+		$('#editor-tmp').keyup(function(e) {
+			var kCd = e.keyCode || e.which;
+			// https://stackoverflow.com/questions/17139039/keycode-is-always-zero-in-chrome-for-android
+			if (kCd == 0 || kCd == 229) { //for android chrome keycode fix
+				kCd = getKeyCode(this.value);
+			}
+			var position = $(this).getCursorPosition();
+			var deleted = '';
+			var val = $(this).val();
+			var action = '';
+			var chr = '';
+			var pos = position[0];
+			/*Enter: 13,Up: 38,Down: 40,Right: 39,Left: 37,Esc: 27,SpaceBar: 32
+			Ctrl: 17,Alt: 18, Shift: 16*/
+			var ignoreKeys = [ 8, 46, 13, 38, 40, 39, 37, 27, 17, 18, 16 ];
+			if (ignoreKeys.includes(kCd)) {
+				console.log("Ignored keypress - " + chr);
+				action = 'ignore';
+			} else {
+				action = 'INSERT';
+				/* chr = String.fromCharCode(kCd);
+				if (!e.shiftKey) {
+					chr = chr.toLowerCase();
+				}  */
+				//chr = val;
+				chr = val.substring(position[0] - 1, position[1]);
+				pos = position[0] - 1;
+			}
+
+			queueOrSend(action, chr, pos, documentVersion);
+
+		});
+		
+		function queueOrSend(action, chr, pos, versionBeforeThisOp) {
+			
+			
+			if (action && action !== 'ignore' && pos >= 0) {
+				var timestamp = Date.now();
+				console.log('action = ' + action + ' chr = ' + chr + ' pos = '
+						+ pos);
+				
+				var otMessage = {
+					"action" : action,
+					"character" : chr,
+					"position" : pos,
+					"versionBeforeThisOp" : versionBeforeThisOp,
+					"timestamp": timestamp
+				};
+				report(JSON.stringify(otMessage), "Sent");
+				if(operationsQueue.length === 0){
+					
+					send(otMessage);
+				}
+				
+				operationsQueue.push(otMessage);
+			
+			}
+			
+			
+			
+		}
+
+		function send(otMessage) {
+					if (ws.readyState == 1) {
+						ws.send(JSON.stringify(otMessage));
+					}
+				
+		}
+
+		//https://stackoverflow.com/questions/3286595/update-textarea-value-but-keep-cursor-position
+
+		function getInputSelection(el) {
+			var start = 0, end = 0, normalizedValue, range, textInputRange, len, endRange;
+
+			if (typeof el.selectionStart == "number"
+					&& typeof el.selectionEnd == "number") {
+				start = el.selectionStart;
+				end = el.selectionEnd;
+				console.log("getInputSelection 1 = " + start + " " + end);
+			} else {
+				console.log("getInputSelection 2 = " + start + " " + end);
+				range = document.selection.createRange();
+
+				if (range && range.parentElement() == el) {
+					len = el.value.length;
+					normalizedValue = el.value.replace(/\r\n/g, "\n");
+
+					// Create a working TextRange that lives only in the input
+					textInputRange = el.createTextRange();
+					textInputRange.moveToBookmark(range.getBookmark());
+
+					// Check if the start and end of the selection are at the very end
+					// of the input, since moveStart/moveEnd doesn't return what we want
+					// in those cases
+					endRange = el.createTextRange();
+					endRange.collapse(false);
+
+					if (textInputRange.compareEndPoints("StartToEnd", endRange) > -1) {
+						start = end = len;
+					} else {
+						start = -textInputRange.moveStart("character", -len);
+						start += normalizedValue.slice(0, start).split("\n").length - 1;
+
+						if (textInputRange.compareEndPoints("EndToEnd",
+								endRange) > -1) {
+							end = len;
+						} else {
+							end = -textInputRange.moveEnd("character", -len);
+							end += normalizedValue.slice(0, end).split("\n").length - 1;
+						}
+					}
+				}
+			}
+
+			return {
+				start : start,
+				end : end
+			};
+		}
+
+		function offsetToRangeCharacterMove(el, offset) {
+			return offset
+					- (el.value.slice(0, offset).split("\r\n").length - 1);
+		}
+
+		function setInputSelection(el, startOffset, endOffset) {
+			if (typeof el.selectionStart == "number"
+					&& typeof el.selectionEnd == "number") {
+				console.log("setInputSelection 1 = " + startOffset + " " + endOffset);
+				el.selectionStart = startOffset;
+				el.selectionEnd = endOffset;
+			} else {
+				console.log("setInputSelection 2 = " + startOffset + " " + endOffset);
+				var range = el.createTextRange();
+				var startCharMove = offsetToRangeCharacterMove(el, startOffset);
+				range.collapse(true);
+				if (startOffset == endOffset) {
+					range.move("character", startCharMove);
+				} else {
+					range.moveEnd("character", offsetToRangeCharacterMove(el,
+							endOffset));
+					range.moveStart("character", startCharMove);
+				}
+				range.select();
+			}
+		}
+		// Set cursor back to where it was
+		function setTextAreaValue(data){
+			//var t = document.getElementById("editor");
+			
+			var editorTextArea = $('#editor');
+			var t = editorTextArea[0]; // Get DOM element from jquery
+			
+			var sel = getInputSelection(t);
+			
+			var text = editorTextArea.val();			
+
+			if ("INSERT" === data.action) {
+				var output = text.substring(0, data.position) + data.character
+						+ text.substring(data.position);
+				$('#editor').val(output);
+				//setTextAreaValue(output);
+			} else if ("DELETE" === data.action) {
+				var output = text.substring(0, data.position)
+						+ text.substring(data.position + 1);
+				$('#editor').val(output);
+				//setTextAreaValue(output);
+			}
+			
+			//t.value = output;
+			
+			if(data.position >= sel.start){
+				setInputSelection(t, sel.start, sel.end);
+			} else {
+				setInputSelection(t, sel.start + 1, sel.end + 1);
+			}
+			
+			
+		}
+		
+		function updateVersion(newVersion){
+			console.log("newVersion = " + newVersion);
+			documentVersion = newVersion;
+			$("#versionSpan").html(documentVersion);
+		}
+		
+		function report(msg, header){
+			var report;
+
+				report = "--------- " + header + " ---------"+ "<br/>";
+
+			report = report + msg + "<br/>";
+			$("#output").prepend(report);
+			
+		}
+	</script>
+</body>
+
+</html>
