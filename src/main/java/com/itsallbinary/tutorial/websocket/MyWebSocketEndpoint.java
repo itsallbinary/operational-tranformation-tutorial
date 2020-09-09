@@ -37,8 +37,8 @@ public class MyWebSocketEndpoint {
 		sessions.put(session.getId(), session);
 
 		System.out.println("sessions = " + sessions);
-		
-		Map<String , Object> returnVal = new HashMap<>();
+
+		Map<String, Object> returnVal = new HashMap<>();
 		returnVal.putAll(document.getContentWihVersion());
 		returnVal.put("sessionId", session.getId());
 
@@ -48,7 +48,6 @@ public class MyWebSocketEndpoint {
 			e.printStackTrace();
 		}
 
-		// document.startOperationApplyingThread();
 	}
 
 	/**
@@ -71,7 +70,6 @@ public class MyWebSocketEndpoint {
 		System.out.println("------ Message received [" + session.getId() + "]------\n" + message);
 		Operation operation = gson.fromJson(message, Operation.class);
 		operation.setSessionId(session.getId());
-		// document.addOperationToQueue(operation);
 		document.apply(operation);
 	}
 
